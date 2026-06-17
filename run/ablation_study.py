@@ -12,6 +12,12 @@ from datasets.dataloader import getdataloader
 from models.msamodel import MSAModel
 from src.eval_metrics import eval_senti
 
+def token_dropout_ablation(text_tensor, drop_ratio=0.5):
+    """Zero out random time steps in the text sequence."""
+    B, T, D = text_tensor.shape
+    mask = (torch.rand(B, T, 1, device=text_tensor.device) > drop_ratio).float()
+    return text_tensor * mask
+
 
 def run_ablation(model, loader, hyp_params, mode):
     """Run evaluation in a specific ablation mode.
@@ -36,6 +42,10 @@ def run_ablation(model, loader, hyp_params, mode):
             
             if mode == 'full':
                 output_dict = model([text, audio, vision])
+                preds_logits = output_dict['output']
+            elif mode == 'full_robust':
+                text_corrupted = token_dropout_ablation(text, drop_ratio=0.5)
+                output_dict = model([text_corrupted, audio, vision])
                 preds_logits = output_dict['output']
             else:
                 mode_map = {'text': 0, 'audio': 1, 'vision': 2}
@@ -108,7 +118,7 @@ def run_technique_ablation(hyp_params, orig_dim, dataloaders, device):
             subprocess.check_call(cmd_parts)
         except subprocess.CalledProcessError as e:
             print(f"  WARNING: Training failed for {combo['name']}: {e}")
-            results.append({**combo, 'acc2': 0, 'acc7': 0, 'f1': 0, 'mae': 999, 'corr': 0})
+            results.append({**combo, 'acc2': 0, 'acc7': 0, 'f1': 0, 'mae': 999, 'corr': 0, 'robust_acc2': 0})
             continue
         
         # Load and evaluate
@@ -119,9 +129,11 @@ def run_technique_ablation(hyp_params, orig_dim, dataloaders, device):
         model.load_state_dict(torch.load(f'models/ablation_{i}.pt', map_location=device), strict=False)
         
         metrics = run_ablation(model, dataloaders['test'], hyp_params, 'full')
+        robust_metrics = run_ablation(model, dataloaders['test'], hyp_params, 'full_robust')
+        metrics['robust_acc2'] = robust_metrics['acc2']
         results.append({**combo, **metrics})
         print(f"  Result: Acc-2={metrics['acc2']:.4f} | Acc-7={metrics['acc7']:.4f} | "
-              f"F1={metrics['f1']:.4f} | MAE={metrics['mae']:.4f}")
+              f"F1={metrics['f1']:.4f} | MAE={metrics['mae']:.4f} | Robust-Acc2={metrics['robust_acc2']:.4f}")
     
     return results
 
@@ -259,13 +271,16 @@ def main():
                 '✓' if r.get('dropout') else '✗',
                 '✓' if r.get('ogm') else '✗',
                 '✓' if r.get('contrastive') else '✗',
-                f"{r['acc2']:.4f}", f"{r['acc7']:.4f}",
-                f"{r['f1']:.4f}", f"{r['mae']:.4f}"
+                f"{r['acc2']:.4f}", f"{r['f1']:.4f}", f"{r['robust_acc2']:.4f}"
             ])
         
         df = pd.DataFrame(rows, columns=['Variant', 'Drop', 'OGM', 'Contr',
-                                          'Acc-2', 'Acc-7', 'F1', 'MAE'])
+                                          'Acc-2', 'F1', 'Robust@50%'])
         print(df.to_string(index=False))
+        
+        # Save results into a markdown file for easy copy-paste
+        with open('logs/technique_ablation_results.md', 'w') as f:
+            f.write(df.to_markdown(index=False))
         
         # Save results
         import json

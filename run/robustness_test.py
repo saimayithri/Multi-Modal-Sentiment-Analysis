@@ -108,6 +108,7 @@ def evaluate_with_corruption(model, loader, device, corruption_fn=None, corrupti
     """
     model.eval()
     all_preds, all_truths = [], []
+    all_gates = []
     
     with torch.no_grad():
         for batch in loader:
@@ -127,10 +128,21 @@ def evaluate_with_corruption(model, loader, device, corruption_fn=None, corrupti
             
             all_preds.append(preds_reg)
             all_truths.append(y.squeeze(-1))
+            
+            if 'gate_weights' in outputs and outputs['gate_weights'] is not None:
+                all_gates.append(outputs['gate_weights'])
     
     all_preds = torch.cat(all_preds)
     all_truths = torch.cat(all_truths)
-    return eval_senti(all_preds, all_truths, exclude_zero=True)
+    metrics = eval_senti(all_preds, all_truths, exclude_zero=True)
+    
+    if len(all_gates) > 0:
+        avg_gates = torch.cat(all_gates, dim=0).mean(dim=0).cpu().numpy()
+        metrics['gate_text'] = float(avg_gates[0])
+        metrics['gate_audio'] = float(avg_gates[1])
+        metrics['gate_vision'] = float(avg_gates[2])
+    
+    return metrics
 
 
 def run_noise_sweep(model, loader, device, noise_type='gaussian', levels=None):
@@ -172,8 +184,12 @@ def run_noise_sweep(model, loader, device, noise_type='gaussian', levels=None):
             )
         
         results.append((level, metrics))
+        gate_str = ""
+        if 'gate_text' in metrics:
+            gate_str = f"| Gates: T={metrics['gate_text']:.2f} A={metrics['gate_audio']:.2f} V={metrics['gate_vision']:.2f}"
+            
         print(f"  {noise_type} @ {level:.0%}: Acc-2={metrics['acc2']:.4f} | "
-              f"F1={metrics['f1']:.4f} | MAE={metrics['mae']:.4f}")
+              f"F1={metrics['f1']:.4f} | MAE={metrics['mae']:.4f} {gate_str}")
     
     return results
 
@@ -223,6 +239,10 @@ def compute_degradation_table(all_results):
     rows = []
     for model_name, noise_type, results in all_results:
         clean_acc = results[0][1]['acc2']
+        levels = [r[0] for r in results]
+        acc_values = [r[1]['acc2'] for r in results]
+        audc = np.trapz(acc_values, levels)
+        
         for level, metrics in results:
             degradation = clean_acc - metrics['acc2']
             deg_pct = (degradation / (clean_acc + 1e-8)) * 100
@@ -234,7 +254,8 @@ def compute_degradation_table(all_results):
                 'F1': f"{metrics['f1']:.4f}",
                 'MAE': f"{metrics['mae']:.4f}",
                 'Degradation': f"{degradation:+.4f}",
-                'Deg%': f"{deg_pct:.1f}%"
+                'Deg%': f"{deg_pct:.1f}%",
+                'AUDC': f"{audc:.4f}" if level == 0.0 else ""
             })
     
     return pd.DataFrame(rows)

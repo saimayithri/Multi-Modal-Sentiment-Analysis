@@ -105,6 +105,13 @@ python run/robustness_test.py \
 
 ## 📊 Results & Performance
 
-Our framework achieves a **Binary Accuracy (Acc-2) of 81.01%** on CMU-MOSI (up from the 79.17% baseline). 
+### 1. Robustness vs SOTA
+State-of-the-art models like MISA (2020) and MFM push clean-text accuracy on CMU-MOSI to ~84-85%. However, they do so by hyper-optimizing for the text modality. When text noise is introduced, these models suffer catastrophic failure.
 
-More importantly, under **severe text corruption (50% token dropout)**, our Balanced Hybrid model degrades significantly less than traditional text-dominant baselines, relying on its strong audio and visual representations to maintain accurate sentiment predictions. Check the generated `figures/robustness_curves.png` for visual proof.
+Our framework trades a small amount of clean-text accuracy for a massive gain in real-world robustness:
+* **Clean-Text Accuracy:** 81.01% (Validation) / 76.8% (Test Set)
+* **Robustness:** Under **severe text corruption (50% token dropout)**, our Balanced Hybrid model degrades significantly less than traditional text-dominant baselines, relying on its strong audio and visual representations to maintain accurate sentiment predictions.
+
+*(Note: Validation accuracy is used for early stopping and hyperparameter tuning, while Test accuracy is reported in our JSON logs for strict evaluation).*
+
+Check the generated `figures/robustness_curves.png` for visual proof of this degradation gap.

@@ -50,11 +50,11 @@ def eval_senti(results, truths, exclude_zero=False):
 
     # Return as dict for easy table generation
     metrics = {
-        'acc2': acc2,
-        'acc7': acc7,
-        'f1': f1,
-        'mae': mae,
-        'corr': corr
+        'acc2': float(acc2),
+        'acc7': float(acc7),
+        'f1': float(f1),
+        'mae': float(mae),
+        'corr': float(corr)
     }
     return metrics
 

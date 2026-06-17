@@ -254,50 +254,63 @@ def plot_modality_ablation_bars(results, output_dir):
     print(f"  Saved: {path}")
 
 
-def plot_tsne(model, loader, device, output_dir):
-    """t-SNE visualization of latent representations per modality."""
+def plot_tsne(model_stage2, model_stage3, loader, device, output_dir):
+    """t-SNE visualization of latent representations per modality (Before vs After Stage 3)."""
     from sklearn.manifold import TSNE
     import torch
     
-    model.eval()
-    all_h = {0: [], 1: [], 2: []}
-    all_labels = []
+    def extract_features(model):
+        model.eval()
+        all_h = {0: [], 1: [], 2: []}
+        all_labels = []
+        
+        with torch.no_grad():
+            for batch in loader:
+                text, audio, vision, y = batch['text'], batch['audio'], batch['vision'], batch['labels']
+                text, audio, vision = text.to(device), audio.to(device), vision.to(device)
+                
+                outputs = model([text, audio, vision])
+                hs = outputs['hs_detached']
+                for i in range(3):
+                    all_h[i].append(hs[i][0].cpu().numpy())
+                all_labels.append(y.squeeze(-1).numpy())
+        
+        for i in range(3):
+            all_h[i] = np.concatenate(all_h[i], axis=0)
+        return all_h, np.concatenate(all_labels, axis=0)
+
+    print("Extracting features for Stage 2 (Before Alignment)...")
+    h2, labels2 = extract_features(model_stage2)
+    print("Extracting features for Stage 3 (After Alignment)...")
+    h3, labels3 = extract_features(model_stage3)
     
-    with torch.no_grad():
-        for batch in loader:
-            text, audio, vision, y = batch['text'], batch['audio'], batch['vision'], batch['labels']
-            text, audio, vision = text.to(device), audio.to(device), vision.to(device)
-            
-            outputs = model([text, audio, vision])
-            hs = outputs['hs_detached']
-            for i in range(3):
-                all_h[i].append(hs[i][0].cpu().numpy())
-            all_labels.append(y.squeeze(-1).numpy())
+    binary_labels = (labels2 > 0).astype(int)  # 0=negative, 1=positive
     
-    for i in range(3):
-        all_h[i] = np.concatenate(all_h[i], axis=0)
-    all_labels = np.concatenate(all_labels, axis=0)
-    binary_labels = (all_labels > 0).astype(int)  # 0=negative, 1=positive
-    
-    fig, axes = plt.subplots(1, 3, figsize=(21, 6))
+    fig, axes = plt.subplots(2, 3, figsize=(21, 12))
     modality_names = ['Text', 'Audio', 'Vision']
     mod_colors = [COLORS['text'], COLORS['audio'], COLORS['vision']]
+    row_titles = ['Stage 2: Before Contrastive Alignment', 'Stage 3: After Contrastive Alignment']
     
-    for idx, (ax, name, color) in enumerate(zip(axes, modality_names, mod_colors)):
-        # Subsample for speed
-        n = min(500, len(all_h[idx]))
-        indices = np.random.choice(len(all_h[idx]), n, replace=False)
-        
-        tsne = TSNE(n_components=2, random_state=42, perplexity=30, n_iter=1000)
-        embedded = tsne.fit_transform(all_h[idx][indices])
-        
-        scatter = ax.scatter(embedded[:, 0], embedded[:, 1],
-                            c=binary_labels[indices], cmap='RdYlGn',
-                            alpha=0.6, s=20, edgecolors='white', linewidths=0.3)
-        ax.set_title(f'{name} Encoder Latent Space', fontweight='bold', fontsize=13)
-        ax.set_xlabel('t-SNE 1')
-        ax.set_ylabel('t-SNE 2')
-        plt.colorbar(scatter, ax=ax, label='Sentiment (0=Neg, 1=Pos)')
+    for row_idx, (h_dict, row_title) in enumerate([(h2, row_titles[0]), (h3, row_titles[1])]):
+        for col_idx, (name, color) in enumerate(zip(modality_names, mod_colors)):
+            ax = axes[row_idx, col_idx]
+            
+            n = min(500, len(h_dict[col_idx]))
+            indices = np.random.choice(len(h_dict[col_idx]), n, replace=False)
+            
+            tsne = TSNE(n_components=2, random_state=42, perplexity=30, n_iter=1000)
+            embedded = tsne.fit_transform(h_dict[col_idx][indices])
+            
+            scatter = ax.scatter(embedded[:, 0], embedded[:, 1],
+                                c=binary_labels[indices], cmap='RdYlGn',
+                                alpha=0.6, s=20, edgecolors='white', linewidths=0.3)
+            ax.set_title(f'{name} ({row_title})', fontweight='bold', fontsize=13)
+            ax.set_xlabel('t-SNE 1')
+            ax.set_ylabel('t-SNE 2')
+            if col_idx == 2:
+                plt.colorbar(scatter, ax=ax, label='Sentiment (0=Neg, 1=Pos)')
+    
+
     
     plt.tight_layout()
     path = os.path.join(output_dir, 'tsne_representations.png')
@@ -313,7 +326,8 @@ def main():
     parser.add_argument('--stage', type=int, default=3, help='Which stage log to visualize')
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--tsne', action='store_true', help='Generate t-SNE plots (requires model + data)')
-    parser.add_argument('--model_path', type=str, default='models/robust_hybrid_best.pt')
+    parser.add_argument('--model_stage2', type=str, default='models/students_distilled_aligned.pt')
+    parser.add_argument('--model_stage3', type=str, default='models/robust_hybrid_best.pt')
     parser.add_argument('--data_path', type=str, default='data/unaligned_50.pkl')
     parser.add_argument('--dataset', type=str, default='mosi')
     parser.add_argument('--no_cuda', action='store_true')
@@ -346,14 +360,16 @@ def main():
         use_cuda = torch.cuda.is_available() and not args.no_cuda
         device = torch.device("cuda" if use_cuda else "cpu")
         
-        if os.path.exists(args.model_path):
-            print(f"\nGenerating t-SNE from model: {args.model_path}")
+        if os.path.exists(args.model_stage2) and os.path.exists(args.model_stage3):
+            print(f"\nGenerating t-SNE comparing: {args.model_stage2} vs {args.model_stage3}")
             dataloader, orig_dim = getdataloader(args.dataset, 32, args.data_path)
-            model = MSAModel(output_dim=7, orig_dim=orig_dim, proj_dim=40, layers=5).to(device)
-            model.load_state_dict(torch.load(args.model_path, map_location=device), strict=False)
-            plot_tsne(model, dataloader['test'], device, args.output_dir)
+            model2 = MSAModel(output_dim=7, orig_dim=orig_dim, proj_dim=40, layers=5).to(device)
+            model2.load_state_dict(torch.load(args.model_stage2, map_location=device), strict=False)
+            model3 = MSAModel(output_dim=7, orig_dim=orig_dim, proj_dim=40, layers=5).to(device)
+            model3.load_state_dict(torch.load(args.model_stage3, map_location=device), strict=False)
+            plot_tsne(model2, model3, dataloader['test'], device, args.output_dir)
         else:
-            print(f"Warning: Model not found: {args.model_path}")
+            print(f"Warning: Models not found for t-SNE comparison")
     
     print(f"\nAll figures saved to: {args.output_dir}/")
 
