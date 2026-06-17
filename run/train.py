@@ -55,16 +55,7 @@ def evaluate_classification(model, loader, hyp_params):
             if not hyp_params.eval_modes.get('audio', True): audio.zero_()
             if not hyp_params.eval_modes.get('vision', True): vision.zero_()
             outputs = model([text, audio, vision])
-            
-            # If we are strictly evaluating a single modality (like in Stage 2), use its unimodal head
-            # Otherwise use the full fusion output
-            if hyp_params.eval_modes == {'text': False, 'audio': True, 'vision': False}:
-                preds_logits = outputs['unimodal_logits'][1]
-            elif hyp_params.eval_modes == {'text': False, 'audio': False, 'vision': True}:
-                preds_logits = outputs['unimodal_logits'][2]
-            else:
-                preds_logits = outputs['output']
-                
+            preds_logits = outputs['output']
             preds_class = torch.argmax(preds_logits, dim=1)
             preds_reg_style = preds_class.cpu().float() - 3
             all_preds.append(preds_reg_style)
