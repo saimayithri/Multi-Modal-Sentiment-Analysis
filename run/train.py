@@ -54,8 +54,15 @@ def evaluate_classification(model, loader, hyp_params):
             if not hyp_params.eval_modes.get('text', True): text.zero_()
             if not hyp_params.eval_modes.get('audio', True): audio.zero_()
             if not hyp_params.eval_modes.get('vision', True): vision.zero_()
-            outputs = model([text, audio, vision])
-            preds_logits = outputs['output']
+            
+            active_modes = [k for k, v in hyp_params.eval_modes.items() if v]
+            if len(active_modes) == 1:
+                mode_map = {'text': 0, 'audio': 1, 'vision': 2}
+                outputs = model([text, audio, vision], unimodal_mode=mode_map[active_modes[0]])
+                preds_logits = outputs['unimodal_output']
+            else:
+                outputs = model([text, audio, vision])
+                preds_logits = outputs['output']
             preds_class = torch.argmax(preds_logits, dim=1)
             preds_reg_style = preds_class.cpu().float() - 3
             all_preds.append(preds_reg_style)
