@@ -67,7 +67,17 @@ def evaluate_classification(model, loader, hyp_params):
             preds_reg_style = preds_class.cpu().float() - 3
             all_preds.append(preds_reg_style)
             all_truths.append(y_reg.cpu())
+            
     all_preds, all_truths = torch.cat(all_preds), torch.cat(all_truths)
+    
+    from collections import Counter
+    pred_classes_eval = (all_preds.numpy().round() + 3).astype(int)
+    true_classes_eval = (all_truths.squeeze().numpy().round() + 3).astype(int)
+    
+    active_modes_str = "+".join([k for k, v in hyp_params.eval_modes.items() if v]) or "none"
+    print(f"  [{active_modes_str.upper()}] Pred Dist: {dict(Counter(pred_classes_eval))}")
+    print(f"  [{active_modes_str.upper()}] True Dist: {dict(Counter(true_classes_eval))}")
+    
     metrics = eval_senti(all_preds, all_truths, exclude_zero=True)
     return metrics
 
@@ -88,7 +98,7 @@ def run():
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--no_cuda', action='store_true')
     parser.add_argument('--alpha', type=float, default=0.7)
-    parser.add_argument('--temperature', type=float, default=4.0)
+    parser.add_argument('--temperature', type=float, default=3.0)
     parser.add_argument('--margin', type=float, default=1.0)
     parser.add_argument('--lambda_triplet', type=float, default=0.5)
     parser.add_argument('--nlevels', type=int, default=5)
@@ -176,9 +186,16 @@ def run():
         optimizer = optim.Adam(list(student_model.parameters()), lr=hyp_params.lr, weight_decay=1e-4)
         scheduler = ReduceLROnPlateau(optimizer, mode='max', patience=5, factor=0.5)
         best_val_acc = 0.0
-        triplet_loss_fn = nn.TripletMarginLoss(margin=hyp_params.margin, p=2)
         for epoch in range(1, hyp_params.num_epochs + 1):
             student_model.train()
+            
+            # Staged Warmup Protocol
+            if epoch <= 10:
+                kl_weight = 0.0
+                ce_weight = 1.0
+            else:
+                kl_weight = 0.5 * ((epoch - 10) / 30)
+                ce_weight = 1.0 - kl_weight
             epoch_loss_a, epoch_loss_v = 0.0, 0.0
             for batch in dataloaders['train']:
                 text, audio, vision, y_reg = batch['text'], batch['audio'], batch['vision'], batch['labels']
@@ -187,15 +204,18 @@ def run():
                 with torch.no_grad():
                     teacher_outputs = teacher_model([text, torch.zeros_like(audio).to(device), torch.zeros_like(vision).to(device)])
                     teacher_logits = teacher_outputs['output']
-                    h_text_teacher = teacher_outputs['hs_nondetached'][0][0]
                 text_zeros = torch.zeros_like(text).to(device)
                 optimizer.zero_grad()
                 audio_outputs = student_model([text_zeros, audio, torch.zeros_like(vision).to(device)])
                 audio_logits, h_audio = audio_outputs['unimodal_logits'][1], audio_outputs['hs_nondetached'][1][0]
-                loss_kl_a = nn.KLDivLoss(reduction='batchmean')(F.log_softmax(audio_logits / hyp_params.temperature, dim=1), F.softmax(teacher_logits / hyp_params.temperature, dim=1)) * (hyp_params.temperature ** 2)
+                
                 loss_ce_a = criterion(audio_logits, y_class)
-                loss_triplet_a = triplet_loss_fn(h_audio, h_text_teacher, h_text_teacher.roll(1, 0))
-                total_loss_a = (hyp_params.alpha * loss_kl_a) + ((1 - hyp_params.alpha) * loss_ce_a) + (hyp_params.lambda_triplet * loss_triplet_a)
+                if kl_weight > 0:
+                    loss_kl_a = nn.KLDivLoss(reduction='batchmean')(F.log_softmax(audio_logits / hyp_params.temperature, dim=1), F.softmax(teacher_logits / hyp_params.temperature, dim=1)) * (hyp_params.temperature ** 2)
+                    total_loss_a = (kl_weight * loss_kl_a) + (ce_weight * loss_ce_a)
+                else:
+                    total_loss_a = loss_ce_a
+                    
                 total_loss_a.backward()
                 torch.nn.utils.clip_grad_norm_(student_model.parameters(), hyp_params.grad_clip)
                 optimizer.step()
@@ -204,10 +224,14 @@ def run():
                 optimizer.zero_grad()
                 vision_outputs = student_model([text_zeros, torch.zeros_like(audio).to(device), vision])
                 vision_logits, h_vision = vision_outputs['unimodal_logits'][2], vision_outputs['hs_nondetached'][2][0]
-                loss_kl_v = nn.KLDivLoss(reduction='batchmean')(F.log_softmax(vision_logits / hyp_params.temperature, dim=1), F.softmax(teacher_logits / hyp_params.temperature, dim=1)) * (hyp_params.temperature ** 2)
+                
                 loss_ce_v = criterion(vision_logits, y_class)
-                loss_triplet_v = triplet_loss_fn(h_vision, h_text_teacher, h_text_teacher.roll(1, 0))
-                total_loss_v = (hyp_params.alpha * loss_kl_v) + ((1 - hyp_params.alpha) * loss_ce_v) + (hyp_params.lambda_triplet * loss_triplet_v)
+                if kl_weight > 0:
+                    loss_kl_v = nn.KLDivLoss(reduction='batchmean')(F.log_softmax(vision_logits / hyp_params.temperature, dim=1), F.softmax(teacher_logits / hyp_params.temperature, dim=1)) * (hyp_params.temperature ** 2)
+                    total_loss_v = (kl_weight * loss_kl_v) + (ce_weight * loss_ce_v)
+                else:
+                    total_loss_v = loss_ce_v
+                    
                 total_loss_v.backward()
                 torch.nn.utils.clip_grad_norm_(student_model.parameters(), hyp_params.grad_clip)
                 optimizer.step()

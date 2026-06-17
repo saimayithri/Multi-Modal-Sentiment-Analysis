@@ -83,6 +83,7 @@ class MSAModel(nn.Module):
         self.relu_dropout, self.embed_dropout, self.res_dropout, self.out_dropout, self.attn_dropout = \
             relu_dropout, embed_dropout, res_dropout, out_dropout, attn_dropout
 
+        self.input_norms = nn.ModuleList([nn.LayerNorm(self.orig_dim[i]) for i in range(self.num_mod)])
         self.proj = nn.ModuleList([nn.Conv1d(self.orig_dim[i], self.proj_dim, kernel_size=1, padding=0) for i in range(self.num_mod)])
         self.encoders = nn.ModuleList([
             TransformerEncoder(embed_dim=proj_dim, num_heads=num_heads, layers=layers, attn_dropout=attn_dropout,
@@ -112,7 +113,9 @@ class MSAModel(nn.Module):
         ])
 
     def forward(self, x, unimodal_mode=None):
-        hs = [self.encoders[i](self.proj[i](x[i].transpose(1, 2)).permute(2, 0, 1)) for i in range(self.num_mod)]
+        # Apply LayerNorm before projection
+        x_normed = [self.input_norms[i](x[i]) for i in range(self.num_mod)]
+        hs = [self.encoders[i](self.proj[i](x_normed[i].transpose(1, 2)).permute(2, 0, 1)) for i in range(self.num_mod)]
 
         # Evaluation-only path for ablation
         if unimodal_mode is not None:
