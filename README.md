@@ -1,11 +1,11 @@
-# 🧠 Robust Multimodal Sentiment Analysis (MSA)
+# 🧠 Multimodal Sentiment Analysis (MSA)
 ## Combatting Text Fragility via Adaptive Modality Balancing
 
 ![Python](https://img.shields.io/badge/Python-3.12-blue)
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.11+-EE4C2C)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-Welcome to the official repository for our research on **Robust Multimodal Sentiment Analysis**. 
+Welcome to the official repository for our research on **Multimodal Sentiment Analysis**. 
 
 Current state-of-the-art MSA models heavily over-rely on the language modality (text). If the text transcript contains errors (e.g., ASR failures, missing words, or noise), the entire model collapses, completely ignoring perfectly valid audio and visual cues. 
 
