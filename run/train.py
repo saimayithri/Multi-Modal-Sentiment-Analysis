@@ -204,6 +204,23 @@ def run():
         
         scheduler_a = ReduceLROnPlateau(optimizer_a, mode='max', patience=5, factor=0.5)
         scheduler_v = ReduceLROnPlateau(optimizer_v, mode='max', patience=5, factor=0.5)
+        
+        # Calculate class weights ONCE before training loop for Stage 2
+        true_labels_train = []
+        for batch in dataloaders['train']:
+            y_reg = batch['labels']
+            y_c = y_reg.squeeze().round().long() + 3
+            true_labels_train.extend(y_c.numpy())
+
+        class_counts = torch.zeros(7)
+        for label in true_labels_train:
+            class_counts[label] += 1
+
+        class_weights = 1.0 / (class_counts + 1e-6)
+        class_weights = class_weights / class_weights.sum() * 7  # Normalize to sum to 7
+        class_weights = class_weights.to(device)
+        weighted_criterion = nn.CrossEntropyLoss(weight=class_weights)
+        
         best_val_acc = 0.0
         for epoch in range(1, hyp_params.num_epochs + 1):
             student_model.train()
@@ -228,7 +245,7 @@ def run():
                 audio_outputs = student_model([text_zeros, audio, torch.zeros_like(vision).to(device)])
                 audio_logits, h_audio = audio_outputs['unimodal_logits'][1], audio_outputs['hs_nondetached'][1][0]
                 
-                loss_ce_a = criterion(audio_logits, y_class)
+                loss_ce_a = weighted_criterion(audio_logits, y_class)
                 if kl_weight > 0:
                     loss_kl_a = nn.KLDivLoss(reduction='batchmean')(F.log_softmax(audio_logits / hyp_params.temperature, dim=1), F.softmax(teacher_logits / hyp_params.temperature, dim=1)) * (hyp_params.temperature ** 2)
                     total_loss_a = (kl_weight * loss_kl_a) + (ce_weight * loss_ce_a)
@@ -244,7 +261,7 @@ def run():
                 vision_outputs = student_model([text_zeros, torch.zeros_like(audio).to(device), vision])
                 vision_logits, h_vision = vision_outputs['unimodal_logits'][2], vision_outputs['hs_nondetached'][2][0]
                 
-                loss_ce_v = criterion(vision_logits, y_class)
+                loss_ce_v = weighted_criterion(vision_logits, y_class)
                 if kl_weight > 0:
                     loss_kl_v = nn.KLDivLoss(reduction='batchmean')(F.log_softmax(vision_logits / hyp_params.temperature, dim=1), F.softmax(teacher_logits / hyp_params.temperature, dim=1)) * (hyp_params.temperature ** 2)
                     total_loss_v = (kl_weight * loss_kl_v) + (ce_weight * loss_ce_v)
@@ -260,8 +277,12 @@ def run():
             metrics_a = evaluate_classification(student_model, dataloaders['valid'], hyp_params)
             hyp_params.eval_modes = {'text': False, 'audio': False, 'vision': True}
             metrics_v = evaluate_classification(student_model, dataloaders['valid'], hyp_params)
-            avg_acc = (metrics_a['acc2'] + metrics_v['acc2']) / 2
-            scheduler.step(avg_acc)
+            acc_a = metrics_a['acc2']
+            acc_v = metrics_v['acc2']
+            avg_acc = (acc_a + acc_v) / 2
+            
+            scheduler_a.step(acc_a)
+            scheduler_v.step(acc_v)
 
             epoch_log = {'epoch': epoch,
                          'train_loss_audio': epoch_loss_a / len(dataloaders['train']),
@@ -275,9 +296,6 @@ def run():
                 best_val_acc = avg_acc
                 print(f"*** New Best A/V Students! Saving to {hyp_params.student_model_path} ***")
                 torch.save(student_model.state_dict(), hyp_params.student_model_path)
-            
-            scheduler_a.step(acc_a)
-            scheduler_v.step(acc_v)
 
     elif hyp_params.stage == 3:
         print("--- Starting Stage 3: Fine-tuning Full Model with Learnable Gating ---")
