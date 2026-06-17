@@ -88,7 +88,7 @@ def run():
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--no_cuda', action='store_true')
     parser.add_argument('--alpha', type=float, default=0.7)
-    parser.add_argument('--temperature', type=float, default=2.0)
+    parser.add_argument('--temperature', type=float, default=4.0)
     parser.add_argument('--margin', type=float, default=1.0)
     parser.add_argument('--lambda_triplet', type=float, default=0.5)
     parser.add_argument('--nlevels', type=int, default=5)
@@ -192,7 +192,7 @@ def run():
                 optimizer.zero_grad()
                 audio_outputs = student_model([text_zeros, audio, torch.zeros_like(vision).to(device)])
                 audio_logits, h_audio = audio_outputs['unimodal_logits'][1], audio_outputs['hs_nondetached'][1][0]
-                loss_kl_a = nn.KLDivLoss(reduction='batchmean')(F.log_softmax(audio_logits / hyp_params.temperature, dim=1), F.softmax(teacher_logits / hyp_params.temperature, dim=1))
+                loss_kl_a = nn.KLDivLoss(reduction='batchmean')(F.log_softmax(audio_logits / hyp_params.temperature, dim=1), F.softmax(teacher_logits / hyp_params.temperature, dim=1)) * (hyp_params.temperature ** 2)
                 loss_ce_a = criterion(audio_logits, y_class)
                 loss_triplet_a = triplet_loss_fn(h_audio, h_text_teacher, h_text_teacher.roll(1, 0))
                 total_loss_a = (hyp_params.alpha * loss_kl_a) + ((1 - hyp_params.alpha) * loss_ce_a) + (hyp_params.lambda_triplet * loss_triplet_a)
@@ -204,7 +204,7 @@ def run():
                 optimizer.zero_grad()
                 vision_outputs = student_model([text_zeros, torch.zeros_like(audio).to(device), vision])
                 vision_logits, h_vision = vision_outputs['unimodal_logits'][2], vision_outputs['hs_nondetached'][2][0]
-                loss_kl_v = nn.KLDivLoss(reduction='batchmean')(F.log_softmax(vision_logits / hyp_params.temperature, dim=1), F.softmax(teacher_logits / hyp_params.temperature, dim=1))
+                loss_kl_v = nn.KLDivLoss(reduction='batchmean')(F.log_softmax(vision_logits / hyp_params.temperature, dim=1), F.softmax(teacher_logits / hyp_params.temperature, dim=1)) * (hyp_params.temperature ** 2)
                 loss_ce_v = criterion(vision_logits, y_class)
                 loss_triplet_v = triplet_loss_fn(h_vision, h_text_teacher, h_text_teacher.roll(1, 0))
                 total_loss_v = (hyp_params.alpha * loss_kl_v) + ((1 - hyp_params.alpha) * loss_ce_v) + (hyp_params.lambda_triplet * loss_triplet_v)
