@@ -83,7 +83,11 @@ class MSAModel(nn.Module):
         self.relu_dropout, self.embed_dropout, self.res_dropout, self.out_dropout, self.attn_dropout = \
             relu_dropout, embed_dropout, res_dropout, out_dropout, attn_dropout
 
-        self.input_norms = nn.ModuleList([nn.LayerNorm(self.orig_dim[i]) for i in range(self.num_mod)])
+        self.input_norms = nn.ModuleList([
+            nn.Identity(), # Text is already BERT-normalized
+            nn.LayerNorm(self.orig_dim[1]), # Audio
+            nn.LayerNorm(self.orig_dim[2])  # Vision
+        ])
         self.proj = nn.ModuleList([nn.Conv1d(self.orig_dim[i], self.proj_dim, kernel_size=1, padding=0) for i in range(self.num_mod)])
         self.encoders = nn.ModuleList([
             TransformerEncoder(embed_dim=proj_dim, num_heads=num_heads, layers=layers, attn_dropout=attn_dropout,

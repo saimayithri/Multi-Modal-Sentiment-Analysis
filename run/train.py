@@ -176,7 +176,7 @@ def run():
         print("--- Starting Stage 2: Training A/V encoders with Decoupled Updates ---")
         teacher_model = MSAModel(output_dim=hyp_params.num_classes, orig_dim=orig_dim, proj_dim=hyp_params.proj_dim, layers=hyp_params.nlevels).to(device)
         try:
-            teacher_model.load_state_dict(torch.load(hyp_params.teacher_model_path, map_location=device))
+            teacher_model.load_state_dict(torch.load(hyp_params.teacher_model_path, map_location=device), strict=False)
         except FileNotFoundError:
             print(f"ERROR: Teacher model not found at {hyp_params.teacher_model_path}. Please run Stage 1 first.")
             sys.exit(1)
