@@ -78,6 +78,9 @@ def evaluate_classification(model, loader, hyp_params):
     print(f"  [{active_modes_str.upper()}] Pred Dist: {dict(Counter(pred_classes_eval))}")
     print(f"  [{active_modes_str.upper()}] True Dist: {dict(Counter(true_classes_eval))}")
     
+    # Also print the actual logit ranges
+    print(f"  [{active_modes_str.upper()}] Logit range: {all_preds.min().item():.3f} to {all_preds.max().item():.3f}")
+    
     metrics = eval_senti(all_preds, all_truths, exclude_zero=True)
     return metrics
 
@@ -183,8 +186,24 @@ def run():
         teacher_model.eval()
         print("Teacher model loaded and frozen.")
         student_model = model
-        optimizer = optim.Adam(list(student_model.parameters()), lr=hyp_params.lr, weight_decay=1e-4)
-        scheduler = ReduceLROnPlateau(optimizer, mode='max', patience=5, factor=0.5)
+        
+        audio_params = list(student_model.input_norms[1].parameters()) + \
+                       list(student_model.proj[1].parameters()) + \
+                       list(student_model.encoders[1].parameters()) + \
+                       list(student_model.unimodal_heads[1].parameters()) + \
+                       list(student_model.gate_classifiers.classifiers[1].parameters())
+                       
+        vision_params = list(student_model.input_norms[2].parameters()) + \
+                        list(student_model.proj[2].parameters()) + \
+                        list(student_model.encoders[2].parameters()) + \
+                        list(student_model.unimodal_heads[2].parameters()) + \
+                        list(student_model.gate_classifiers.classifiers[2].parameters())
+
+        optimizer_a = optim.AdamW(audio_params, lr=1e-3, weight_decay=1e-3)
+        optimizer_v = optim.AdamW(vision_params, lr=1e-3, weight_decay=1e-3)
+        
+        scheduler_a = ReduceLROnPlateau(optimizer_a, mode='max', patience=5, factor=0.5)
+        scheduler_v = ReduceLROnPlateau(optimizer_v, mode='max', patience=5, factor=0.5)
         best_val_acc = 0.0
         for epoch in range(1, hyp_params.num_epochs + 1):
             student_model.train()
@@ -205,7 +224,7 @@ def run():
                     teacher_outputs = teacher_model([text, torch.zeros_like(audio).to(device), torch.zeros_like(vision).to(device)])
                     teacher_logits = teacher_outputs['output']
                 text_zeros = torch.zeros_like(text).to(device)
-                optimizer.zero_grad()
+                optimizer_a.zero_grad()
                 audio_outputs = student_model([text_zeros, audio, torch.zeros_like(vision).to(device)])
                 audio_logits, h_audio = audio_outputs['unimodal_logits'][1], audio_outputs['hs_nondetached'][1][0]
                 
@@ -217,11 +236,11 @@ def run():
                     total_loss_a = loss_ce_a
                     
                 total_loss_a.backward()
-                torch.nn.utils.clip_grad_norm_(student_model.parameters(), hyp_params.grad_clip)
-                optimizer.step()
+                torch.nn.utils.clip_grad_norm_(audio_params, hyp_params.grad_clip)
+                optimizer_a.step()
                 epoch_loss_a += total_loss_a.item()
 
-                optimizer.zero_grad()
+                optimizer_v.zero_grad()
                 vision_outputs = student_model([text_zeros, torch.zeros_like(audio).to(device), vision])
                 vision_logits, h_vision = vision_outputs['unimodal_logits'][2], vision_outputs['hs_nondetached'][2][0]
                 
@@ -233,8 +252,8 @@ def run():
                     total_loss_v = loss_ce_v
                     
                 total_loss_v.backward()
-                torch.nn.utils.clip_grad_norm_(student_model.parameters(), hyp_params.grad_clip)
-                optimizer.step()
+                torch.nn.utils.clip_grad_norm_(vision_params, hyp_params.grad_clip)
+                optimizer_v.step()
                 epoch_loss_v += total_loss_v.item()
 
             hyp_params.eval_modes = {'text': False, 'audio': True, 'vision': False}
@@ -247,15 +266,18 @@ def run():
             epoch_log = {'epoch': epoch,
                          'train_loss_audio': epoch_loss_a / len(dataloaders['train']),
                          'train_loss_vision': epoch_loss_v / len(dataloaders['train']),
-                         'val_acc_audio': metrics_a['acc2'], 'val_acc_vision': metrics_v['acc2'],
+                         'val_acc_audio': acc_a, 'val_acc_vision': acc_v,
                          'val_avg_acc': avg_acc}
             training_log['epochs'].append(epoch_log)
 
-            print(f"Stage 2 | Epoch {epoch:2d} | A-Acc: {metrics_a['acc2']:.4f} | V-Acc: {metrics_v['acc2']:.4f} | Avg: {avg_acc:.4f}")
+            print(f"Stage 2 | Epoch {epoch:2d} | A-Acc: {acc_a:.4f} | V-Acc: {acc_v:.4f} | Avg: {avg_acc:.4f}")
             if avg_acc > best_val_acc:
                 best_val_acc = avg_acc
                 print(f"*** New Best A/V Students! Saving to {hyp_params.student_model_path} ***")
                 torch.save(student_model.state_dict(), hyp_params.student_model_path)
+            
+            scheduler_a.step(acc_a)
+            scheduler_v.step(acc_v)
 
     elif hyp_params.stage == 3:
         print("--- Starting Stage 3: Fine-tuning Full Model with Learnable Gating ---")
