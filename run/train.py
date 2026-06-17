@@ -55,7 +55,16 @@ def evaluate_classification(model, loader, hyp_params):
             if not hyp_params.eval_modes.get('audio', True): audio.zero_()
             if not hyp_params.eval_modes.get('vision', True): vision.zero_()
             outputs = model([text, audio, vision])
-            preds_logits = outputs['output']
+            
+            # If we are strictly evaluating a single modality (like in Stage 2), use its unimodal head
+            # Otherwise use the full fusion output
+            if hyp_params.eval_modes == {'text': False, 'audio': True, 'vision': False}:
+                preds_logits = outputs['unimodal_logits'][1]
+            elif hyp_params.eval_modes == {'text': False, 'audio': False, 'vision': True}:
+                preds_logits = outputs['unimodal_logits'][2]
+            else:
+                preds_logits = outputs['output']
+                
             preds_class = torch.argmax(preds_logits, dim=1)
             preds_reg_style = preds_class.cpu().float() - 3
             all_preds.append(preds_reg_style)
@@ -184,7 +193,7 @@ def run():
                 text_zeros = torch.zeros_like(text).to(device)
                 optimizer.zero_grad()
                 audio_outputs = student_model([text_zeros, audio, torch.zeros_like(vision).to(device)])
-                audio_logits, h_audio = audio_outputs['output'], audio_outputs['hs_nondetached'][1][0]
+                audio_logits, h_audio = audio_outputs['unimodal_logits'][1], audio_outputs['hs_nondetached'][1][0]
                 loss_kl_a = nn.KLDivLoss(reduction='batchmean')(F.log_softmax(audio_logits / hyp_params.temperature, dim=1), F.softmax(teacher_logits / hyp_params.temperature, dim=1))
                 loss_ce_a = criterion(audio_logits, y_class)
                 loss_triplet_a = triplet_loss_fn(h_audio, h_text_teacher, h_text_teacher.roll(1, 0))
@@ -196,7 +205,7 @@ def run():
 
                 optimizer.zero_grad()
                 vision_outputs = student_model([text_zeros, torch.zeros_like(audio).to(device), vision])
-                vision_logits, h_vision = vision_outputs['output'], vision_outputs['hs_nondetached'][2][0]
+                vision_logits, h_vision = vision_outputs['unimodal_logits'][2], vision_outputs['hs_nondetached'][2][0]
                 loss_kl_v = nn.KLDivLoss(reduction='batchmean')(F.log_softmax(vision_logits / hyp_params.temperature, dim=1), F.softmax(teacher_logits / hyp_params.temperature, dim=1))
                 loss_ce_v = criterion(vision_logits, y_class)
                 loss_triplet_v = triplet_loss_fn(h_vision, h_text_teacher, h_text_teacher.roll(1, 0))
