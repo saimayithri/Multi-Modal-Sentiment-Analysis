@@ -22,7 +22,7 @@ var/
 
 # MSA Project Specific
 data/
-models/
+models/*.pt
 logs/
 figures/
 scratch/
